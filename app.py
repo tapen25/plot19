@@ -1,9 +1,11 @@
 import joblib
 import pandas as pd
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # <-- 1. この行をインポートに追加
 
 # Flaskアプリの初期化
 app = Flask(__name__)
+CORS(app)  # <-- 2. この行を追加 (すべてのオリジンからの通信を許可)
 
 # 学習済みモデルの読み込み
 try:
