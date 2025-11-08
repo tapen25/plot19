@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Activity Recognition</title>
+    <title>Activity Recognition (修正版)</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -55,10 +55,11 @@
         
         // データを収集する間隔 (ミリ秒)
         // 注意: センサーの更新頻度はデバイスに依存します
-        const SENSOR_INTERVAL_MS = 50; 
+        // devicemotionイベントは通常固定のレートで発行されるため、
+        // この設定は「processData」の呼び出し頻度制御（throttle）には使えません。
+        // SENSOR_INTERVAL_MS は削除し、BUFFER_SIZEで制御します。
 
         // 1回の予測で使用するサンプル数（＝バッファサイズ）
-        // (例: 50ms * 20サンプル = 1000ms (1秒) 分のデータで1回予測)
         const BUFFER_SIZE = 20; 
 
         // -----------------------------------------------------------------
@@ -71,7 +72,7 @@
 
         let sensorDataBuffer = []; // 生の加速度データを溜めるバッファ
         let isSensorRunning = false;
-        let sensorInterval;
+        // let sensorInterval; // <-- devicemotionを使うため不要に
 
         // --- 1. センサーのパーミッションを要求 (iOS/iPadOSに必要) ---
         function requestSensorPermission() {
@@ -105,21 +106,27 @@
             window.addEventListener('devicemotion', handleMotion);
         }
         
-        // --- 3. センサーデータ（生）の取得とバッファリング ---
+        // --- 3. センサーデータ（生）の取得とバッファリング (★★★ 修正点 ★★★) ---
         function handleMotion(event) {
             if (!isSensorRunning) return;
 
-            // 加速度データ (x, y, z) を取得 (重力加速度を含む)
-            const acc = event.accelerationIncludingGravity;
-            if (acc.x === null || acc.y === null || acc.z === null) {
-                // センサーデータが取得できない場合
-                statusEl.textContent = '加速度データを取得できません';
+            // ★★★ 修正点 ★★★
+            // 「重力加速度を除く」加速度 (acc) を取得
+            // (training_features.csv の基準に合わせるため)
+            const acc = event.acceleration; 
+            // const acc = event.accelerationIncludingGravity; // <-- 修正前 (重力含む)
+
+            if (acc === null || acc.x === null || acc.y === null || acc.z === null) {
+                statusEl.textContent = '加速度データ(重力除く)を取得できません';
+                // (もしここで止まる場合、デバイスが event.acceleration をサポートしていません)
                 return;
             }
 
             // 3軸の加速度から「合成加速度（大きさ）」を計算
             // sqrt(x^2 + y^2 + z^2)
             const magnitude = Math.sqrt(acc.x * acc.x + acc.y * acc.y + acc.z * acc.z);
+            
+            // 静止時のmagnitudeは 0 に近くなるはず
 
             // バッファにデータを追加
             sensorDataBuffer.push(magnitude);
@@ -135,37 +142,37 @@
         }
         
         // --- 4. 特徴量の計算 (!!! 最重要 !!!) ---
-        // sensorDataBuffer (加速度の大きさの配列) から5つの特徴量を計算
         function processData(data) {
             statusEl.textContent = '特徴量を計算中...';
 
-            // 平均 (mean_acc)
+            // --- ★★★ 警告: 以下の計算方法は、学習データ作成時と一致させること ★★★ ---
+
             const mean = data.reduce((a, b) => a + b, 0) / data.length;
             
-            // 標準偏差 (std_acc)
             const variance = data.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / data.length;
             const std = Math.sqrt(variance);
 
-            // 最大 (max_acc)
             const max = Math.max(...data);
-            
-            // 最小 (min_acc)
             const min = Math.min(...data);
 
-            // エネルギー (energy)
-            // ★警告: ここの 'energy' の計算方法は、
-            // training_features.csv を作成した時と「完全に」一致させる必要があります。
-            // ここでは一般的な「二乗平均」を使いますが、もし違う場合は修正してください。
             const energy = data.reduce((a, b) => a + (b * b), 0) / data.length;
-
-            // 計算した特徴量をオブジェクトにまとめる
+            
+            // --- ★★★ 修正点 ★★★ ---
+            // app.py (改良版) は3つの特徴量 (std_acc, min_acc, energy) を期待している
+            // 5つすべて送っても app.py 側で抽出してくれるが、
+            // 送信データ量を減らすため、必要なものだけ送る
             const features = {
-                mean_acc: mean,
                 std_acc: std,
-                max_acc: max,
                 min_acc: min,
                 energy: energy
+                
+                // 以下は app.py (改良版) では使われない
+                // mean_acc: mean, 
+                // max_acc: max
             };
+            
+            // (もし app.py が古いモデル(5特徴量)を使っている場合は、
+            //  上記のコメントアウトを外して5つ送る必要があります)
 
             // 5. APIサーバーに送信
             sendPrediction(features);
@@ -184,7 +191,8 @@
                 });
 
                 if (!response.ok) {
-                    throw new Error(`APIサーバーエラー: ${response.status}`);
+                    const errorData = await response.json().catch(() => ({ error: `APIサーバーエラー: ${response.status}` }));
+                    throw new Error(errorData.error || `APIサーバーエラー: ${response.status}`);
                 }
 
                 const result = await response.json();
@@ -192,9 +200,26 @@
                 // 6. 結果の表示
                 if (result.predicted_label) {
                     statusEl.textContent = '予測完了';
-                    // (例: 'walk' -> 'Walk' のように大文字に)
                     const label = result.predicted_label;
-                    resultEl.textContent = label.charAt(0).toUpperCase() + label.slice(1);
+                    
+                    // 結果に応じて色とテキストを変更
+                    let color = '#007aff'; // default (blue)
+                    let text = label.charAt(0).toUpperCase() + label.slice(1);
+
+                    if (label === 'stay') {
+                        color = '#34C759'; // Green
+                        text = 'Stay (静止)';
+                    } else if (label === 'walk') {
+                        color = '#007aff'; // Blue
+                        text = 'Walk (歩行)';
+                    } else if (label === 'jog') {
+                        color = '#FF3B30'; // Red
+                        text = 'Jog (ジョギング)';
+                    }
+                    
+                    resultEl.textContent = text;
+                    resultEl.style.color = color;
+
                 } else if (result.error) {
                     throw new Error(result.error);
                 }
@@ -202,6 +227,7 @@
             } catch (error) {
                 statusEl.textContent = `予測エラー: ${error.message}`;
                 resultEl.textContent = 'Error';
+                resultEl.style.color = '#FF3B30'; // Red
             }
         }
 
