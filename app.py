@@ -44,7 +44,7 @@ def predict():
             return jsonify({'error': 'リクエストデータがJSON形式ではありません'}), 400
 
         # 学習時に使用した特徴量のリスト
-        features_columns = ['mean_acc', 'std_acc', 'max_acc', 'min_acc', 'energy']
+        features_columns = ['std_acc', 'min_acc', 'energy']
 
         # 受け取ったJSONデータをPandas DataFrameに変換
         # (入力は単一の予測リクエスト { "mean_acc": 0.9, ... } と想定)
