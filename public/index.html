@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Activity Recognition (修正版)</title>
+    <title>Activity Recognition (v2: Raw Data)</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -50,17 +50,12 @@
         // ★★★ 1. 設定項目 ★★★
         // -----------------------------------------------------------------
 
-        // あなたがRenderでデプロイしたAPIのURL（末尾の /predict を忘れずに）
+        // あなたがRenderでデプロイしたAPIのURL
         const API_URL = 'https://my-activity-predictor.onrender.com/predict'; 
         
-        // データを収集する間隔 (ミリ秒)
-        // 注意: センサーの更新頻度はデバイスに依存します
-        // devicemotionイベントは通常固定のレートで発行されるため、
-        // この設定は「processData」の呼び出し頻度制御（throttle）には使えません。
-        // SENSOR_INTERVAL_MS は削除し、BUFFER_SIZEで制御します。
-
-        // 1回の予測で使用するサンプル数（＝バッファサイズ）
-        const BUFFER_SIZE = 200; 
+        // 1回の予測で使用するサンプル数
+        // ★★★ (最重要) 学習時の WINDOW_SIZE と一致させる ★★★
+        const BUFFER_SIZE = 100; 
 
         // -----------------------------------------------------------------
         // 以下、メインロジック
@@ -70,14 +65,12 @@
         const statusEl = document.getElementById('status');
         const resultEl = document.getElementById('result');
 
-        let sensorDataBuffer = []; // 生の加速度データを溜めるバッファ
+        let sensorDataBuffer = []; // ★ 生の {x, y, z} データを溜めるバッファ
         let isSensorRunning = false;
-        // let sensorInterval; // <-- devicemotionを使うため不要に
 
-        // --- 1. センサーのパーミッションを要求 (iOS/iPadOSに必要) ---
+        // --- 1. センサーのパーミッションを要求 (変更なし) ---
         function requestSensorPermission() {
             if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
-                // iOS 13+ の Safari
                 DeviceMotionEvent.requestPermission()
                     .then(permissionState => {
                         if (permissionState === 'granted') {
@@ -90,19 +83,16 @@
                         statusEl.textContent = 'センサー許可エラー: ' + error.message;
                     });
             } else {
-                // Android や iOS 13 未満のブラウザ
                 startSensor();
             }
         }
 
-        // --- 2. センサーのリスナーを開始 ---
+        // --- 2. センサーのリスナーを開始 (変更なし) ---
         function startSensor() {
             statusEl.textContent = 'センサー待機中...';
             isSensorRunning = true;
             startButton.disabled = true;
             startButton.textContent = '計測中';
-
-            // 'devicemotion' イベントリスナーを追加
             window.addEventListener('devicemotion', handleMotion);
         }
         
@@ -110,30 +100,25 @@
         function handleMotion(event) {
             if (!isSensorRunning) return;
 
-            // ★★★ 修正点 ★★★
             // 「重力加速度を除く」加速度 (acc) を取得
-            // (training_features.csv の基準に合わせるため)
             const acc = event.acceleration; 
-            // const acc = event.accelerationIncludingGravity; // <-- 修正前 (重力含む)
 
             if (acc === null || acc.x === null || acc.y === null || acc.z === null) {
                 statusEl.textContent = '加速度データ(重力除く)を取得できません';
-                // (もしここで止まる場合、デバイスが event.acceleration をサポートしていません)
                 return;
             }
 
-            // 3軸の加速度から「合成加速度（大きさ）」を計算
-            // sqrt(x^2 + y^2 + z^2)
-            const magnitude = Math.sqrt(acc.x * acc.x + acc.y * acc.y + acc.z * acc.z);
-            
-            // 静止時のmagnitudeは 0 に近くなるはず
+            // ★ 修正点: 計算せず、生の(x, y, z)をそのままバッファに追加
+            sensorDataBuffer.push({
+                x: acc.x,
+                y: acc.y,
+                z: acc.z
+            });
 
-            // バッファにデータを追加
-            sensorDataBuffer.push(magnitude);
-
-            // バッファが指定サイズに達したら、処理を実行
+            // バッファが指定サイズ (100) に達したら、処理を実行
             if (sensorDataBuffer.length >= BUFFER_SIZE) {
                 // バッファのコピーを渡して処理（非同期）
+                // ★ 修正点: processData はもう計算しないが、名前はそのまま使う
                 processData(sensorDataBuffer.slice()); 
                 
                 // バッファをクリアして次の収集を開始
@@ -141,45 +126,21 @@
             }
         }
         
-        // --- 4. 特徴量の計算 (!!! 最重要 !!!) ---
+        // --- 4. 特徴量の計算 (!!! 修正点: 計算をやめて送信準備するだけ !!!) ---
         function processData(data) {
-            statusEl.textContent = '特徴量を計算中...';
-
-            // --- ★★★ 警告: 以下の計算方法は、学習データ作成時と一致させること ★★★ ---
-
-            const mean = data.reduce((a, b) => a + b, 0) / data.length;
+            statusEl.textContent = 'データを準備中...';
             
-            const variance = data.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / data.length;
-            const std = Math.sqrt(variance);
-
-            const max = Math.max(...data);
-            const min = Math.min(...data);
-
-            const energy = data.reduce((a, b) => a + (b * b), 0) / data.length;
+            // ★ 修正点: JavaScriptでの特徴量計算はすべて削除
             
-            // --- ★★★ 修正点 ★★★ ---
-            // app.py (改良版) は3つの特徴量 (std_acc, min_acc, energy) を期待している
-            // 5つすべて送っても app.py 側で抽出してくれるが、
-            // 送信データ量を減らすため、必要なものだけ送る
-            const features = {
-                std_acc: std,
-                min_acc: min,
-                energy: energy
-                
-                // 以下は app.py (改良版) では使われない
-                // mean_acc: mean, 
-                // max_acc: max
-            };
+            // data は {x,y,z} のオブジェクトが100個入ったリスト
             
-            // (もし app.py が古いモデル(5特徴量)を使っている場合は、
-            //  上記のコメントアウトを外して5つ送る必要があります)
-
             // 5. APIサーバーに送信
-            sendPrediction(features);
+            //    app.py が期待する { "sensor_data": [...] } という形式で送る
+            sendPrediction({ "sensor_data": data });
         }
 
-        // --- 5. APIサーバーへ予測リクエストを送信 ---
-        async function sendPrediction(features) {
+        // --- 5. APIサーバーへ予測リクエストを送信 (★★★ 修正点 ★★★) ---
+        async function sendPrediction(payload) { // 引数を features -> payload に変更
             statusEl.textContent = 'APIサーバーへ送信中...';
             try {
                 const response = await fetch(API_URL, {
@@ -187,7 +148,8 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify(features)
+                    // ★ 修正点: 特徴量(features)ではなく、生のデータ(payload)を送る
+                    body: JSON.stringify(payload)
                 });
 
                 if (!response.ok) {
@@ -197,23 +159,22 @@
 
                 const result = await response.json();
                 
-                // 6. 結果の表示
+                // 6. 結果の表示 (変更なし)
                 if (result.predicted_label) {
                     statusEl.textContent = '予測完了';
                     const label = result.predicted_label;
                     
-                    // 結果に応じて色とテキストを変更
-                    let color = '#007aff'; // default (blue)
+                    let color = '#007aff';
                     let text = label.charAt(0).toUpperCase() + label.slice(1);
 
                     if (label === 'stay') {
-                        color = '#34C759'; // Green
+                        color = '#34C759'; 
                         text = 'Stay (静止)';
                     } else if (label === 'walk') {
-                        color = '#007aff'; // Blue
+                        color = '#007aff';
                         text = 'Walk (歩行)';
                     } else if (label === 'jog') {
-                        color = '#FF3B30'; // Red
+                        color = '#FF3B30';
                         text = 'Jog (ジョギング)';
                     }
                     
@@ -227,11 +188,11 @@
             } catch (error) {
                 statusEl.textContent = `予測エラー: ${error.message}`;
                 resultEl.textContent = 'Error';
-                resultEl.style.color = '#FF3B30'; // Red
+                resultEl.style.color = '#FF3B30';
             }
         }
 
-        // --- スタートボタンの処理 ---
+        // --- スタートボタンの処理 (変更なし) ---
         startButton.addEventListener('click', () => {
             if (!isSensorRunning) {
                 requestSensorPermission();
