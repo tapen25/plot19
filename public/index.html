@@ -108,11 +108,12 @@
                 return;
             }
 
-            // ★ 修正点: 計算せず、生の(x, y, z)をそのままバッファに追加
+            const SCALE_FACTOR = 0.1; // <-- 係数を追加 (0.1)
+            
             sensorDataBuffer.push({
-                x: acc.x,
-                y: acc.y,
-                z: acc.z
+                x: acc.x * SCALE_FACTOR,
+                y: acc.y * SCALE_FACTOR,
+                z: acc.z * SCALE_FACTOR
             });
 
             // バッファが指定サイズ (100) に達したら、処理を実行
