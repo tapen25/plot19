@@ -9,7 +9,7 @@ CORS(app)  # <-- 2. この行を追加 (すべてのオリジンからの通信�
 
 # 学習済みモデルの読み込み
 try:
-    model = joblib.load('activity_model2.joblib')
+    model = joblib.load('har_model.joblib')
     print("モデルの読み込みに成功しました。")
 except FileNotFoundError:
     print("エラー: モデルファイル 'activity_model.joblib' が見つかりません。")
